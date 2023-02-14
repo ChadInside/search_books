@@ -1,0 +1,7 @@
+{
+  "name": "search_books",
+  "version": "1.0.0",
+  "main": "app.js",
+  "author": "Dmytro Savchuk <oyduy1@gmail.com>",
+  "license": "MIT"
+}
