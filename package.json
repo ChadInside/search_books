@@ -1,7 +1,24 @@
 {
   "name": "search_books",
   "version": "1.0.0",
-  "main": "app.js",
+  "main": "index.js",
   "author": "Dmytro Savchuk <oyduy1@gmail.com>",
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.0.3",
+    "express": "^4.18.2",
+    "telegraf": "^4.11.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.17",
+    "@types/node": "^18.13.0",
+    "concurrently": "^7.6.0",
+    "nodemon": "^2.0.20",
+    "typescript": "^4.9.5"
+  },
+  "scripts": {
+    "build": "npx tsc",
+    "start": "node dist/index.js",
+    "dev": "concurrently \"npx tsc --watch\" \"nodemon -q dist/index.js\""
+  }
 }
