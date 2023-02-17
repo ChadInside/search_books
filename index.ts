@@ -28,18 +28,14 @@ bot.hears(/.+/, async ctx => {
   // console.dir(books)\
 
   const page = 1
-  const pages = Math.ceil(books.length / PAGE_SIZE)
+  const totalPages = Math.ceil(books.length / PAGE_SIZE)
   const pageBooks = paginate(books, page)
   // console.log(paginatedBooks.length)
-  const array = new Array(pages).fill('')
+  const array = new Array(totalPages).fill('')
   console.dir(array)
-  const pageButtons = (new Array(pages).fill('')).map((_, i) => {
-    console.log({_})
-    console.log(i)
-    return Markup.button.callback(`${i}`, `page:${i}, query: ${query}`)
-  })
+  const pageButtons = getpageButtons(page, totalPages, query)
   console.log(pageButtons)
-  
+
   const response: string = pageBooks!.reduce((acc, bookAuthors) => {
     acc += book2Html(bookAuthors.book, bookAuthors.authors)
     return acc + '\n'
@@ -84,4 +80,29 @@ function book2Html(book: Book, authors: Array<Author>) {
 
 function paginate(books: Array<any>, page = 1, pageSize = PAGE_SIZE) {
   return books.slice((page - 1) * pageSize, page * pageSize)
+}
+
+function getpageButtons(currentPage: number, totalPages: number, query: string) {
+  const currentPageIndicator = '·'
+  if (totalPages < 6) {
+    return new Array(totalPages).fill('').map((_, i) => {
+      if (i + 1 === currentPage) {
+        return Markup.button.callback(
+          `${currentPageIndicator} ${i + 1} ${currentPageIndicator}`,
+          `page:${i + 1}, query: ${query}`
+        )
+      }
+      return Markup.button.callback(`${i + 1}`, `page:${i + 1}, query: ${query}`)
+    })
+  } else {
+    return new Array(totalPages).fill('').map((_, i) => {
+      if (i + 1 === currentPage) {
+        return Markup.button.callback(
+          `${currentPageIndicator} ${i + 1} ${currentPageIndicator}`,
+          `page:${i + 1}, query: ${query}`
+        )
+      }
+      return Markup.button.callback(`${i + 1}`, `page:${i + 1}, query: ${query}`)
+    })
+  }
 }
