@@ -12,6 +12,7 @@ dotenv.config()
 
 const bot: Telegraf<Context<Update>> = new Telegraf(process.env.BOT_TOKEN)
 const flibustaApi = new FlibustaAPI('http://flibusta.is/')
+const PAGE_SIZE = 5
 bot.use(useNewReplies())
 
 // bot.use(Telegraf.log())
@@ -27,6 +28,7 @@ bot.hears(/.+/, async ctx => {
   // console.dir(books)\
 
   const page = 1
+  const pages = Math.ceil(books.length/pageSize)
   const paginatedBooks = paginate(books, page)
   // console.log(paginatedBooks.length)
 
