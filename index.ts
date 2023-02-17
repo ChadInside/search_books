@@ -22,7 +22,7 @@ bot.hears(/^.{1,3}$/, async ctx => {
 })
 bot.hears(/.+/, async ctx => {
   const query: string = ctx.match[0]
-  console.log(query)
+  console.log(query, query)
 
   const books = await flibustaApi.getBooksByName(query) || []
   // console.dir(books)\
