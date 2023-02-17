@@ -2,3 +2,4 @@ node_modules
 yarn.lock
 dist
 .env
+bfg-1.14.0.jar

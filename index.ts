@@ -28,7 +28,7 @@ bot.hears(/.+/, async ctx => {
   // console.dir(books)\
 
   const page = 1
-  const pages = Math.ceil(books.length/pageSize)
+  const pages = Math.ceil(books.length/PAGE_SIZE)
   const paginatedBooks = paginate(books, page)
   // console.log(paginatedBooks.length)
 
@@ -71,6 +71,6 @@ function book2Html(book: Book, authors: Array<Author>) {
   return result
 }
 
-function paginate(books: Array<any>, page = 1, pageSize = 5) {
+function paginate(books: Array<any>, page = 1, pageSize = PAGE_SIZE) {
   return books.slice((page-1)*pageSize, page*pageSize)
 }
