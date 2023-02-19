@@ -1,4 +1,4 @@
-import { Context, Telegraf, Markup, Composer } from 'telegraf'
+import { Context, Telegraf, Markup, Composer, Telegram, Input } from 'telegraf'
 import { Update } from 'typegram'
 import { useNewReplies } from 'telegraf/future'
 import { message } from 'telegraf/filters'
@@ -9,22 +9,50 @@ import Book from 'flibusta/build/types/book'
 import Author from 'flibusta/build/types/authors'
 import { randomInt } from 'crypto'
 import { BooksByName } from 'flibusta/build/types/booksByName'
+import axios from 'axios'
+import { fromBuffer } from 'telegraf/typings/input'
+import { Readable } from 'stream'
+
 dotenv.config()
 
+type BookInfo = {
+  id: number
+  title: string
+  author: string
+  description: string
+  formats: Array<string>
+}
+
+interface BookFile {
+  id: string
+  file: Buffer
+  fileName: string
+  filePath?: string
+}
+
+type BookFormat = 'mobi' | 'fb2' | 'pdf' | 'epub'
+
+const ORIGIN = 'http://flibusta.is/'
 const bot: Telegraf<Context<Update>> = new Telegraf(process.env.BOT_TOKEN)
-const flibustaApi = new FlibustaAPI('http://flibusta.is/')
+const flibustaApi = new FlibustaAPI(ORIGIN)
 const PAGE_SIZE = 5
 bot.use(useNewReplies())
 
-// bot.use(Telegraf.log())
-bot.hears('/(?<=^download)\d+$/', async ctx=>{
-//get info on book
-  const bookId : number= Number(ctx.match[0])
-  const book = await flibustaApi.getCoverByBookId
-  return ctx.reply('👍👍')
+bot.use(Telegraf.log())
+bot.hears(/(?<=^\/download)\d+$/, async ctx => {
+  //get info on book
+  const bookId: number = Number(ctx.match[0])
+  const book = (await getBookInfoById(bookId)) as BookInfo
+  const replyHTML = `${book.title}\n ${book.author}\n\n ${book.description}\n\n Choose format for download:`
+  const buttons = book.formats.map(format => {
+    const buttonCb = JSON.stringify({ id: book.id, format })
+    console.log({ buttonCb })
+    return Markup.button.callback(format, buttonCb)
+  })
 
+  return ctx.sendMessage(replyHTML, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) })
 
-
+  // return ctx.reply('👍👍')
 })
 bot.hears(/.+/, async ctx => {
   const query: string = ctx.match[0]
@@ -41,7 +69,9 @@ bot.hears(/.+/, async ctx => {
 })
 
 bot.action(/.+/, async (ctx, next) => {
-  const action: { page?: number; query?: string } = JSON.parse(ctx.match[0])
+  console.log('CB')
+  console.log(ctx.match[0])
+  const action: { page?: number; query?: string; id?: number; format?: BookFormat } = JSON.parse(ctx.match[0])
   if (action.hasOwnProperty('page') && action.hasOwnProperty('query')) {
     const currentPage = action.page as number
     const query = action.query as string
@@ -54,9 +84,44 @@ bot.action(/.+/, async (ctx, next) => {
     })
   }
 
+  if (action.hasOwnProperty('id') && action.hasOwnProperty('format')) {
+    //user requested to download book with format
+
+    const bookFile = await downloadBook(String(action.id), action.format)
+    console.log(ctx.from!.id)
+    // console.log(bookFile)
+
+    //  await ctx.sendDocument({
+    //       source: bookFile.file,
+    //       filename: bookFile.fileName,
+    //  })
+    const downloadURL = getDownloadUrl(String(action.id), action.format)
+    console.dir(downloadURL)
+
+    // const inputFile = fromBuffer(bookFile.file, bookFile.fileName)
+    // await ctx.sendDocument(inputFile)
+    console.log({ source: bookFile.file, filename: bookFile.fileName });
+    const inputFile = Input.fromBuffer(bookFile.file, bookFile.fileName+'1')
+    try {
+      const a = await ctx.replyWithDocument(inputFile)
+
+      // const inputFIle =
+
+      // const fileTelegram = await ctx.telegram.sendDocument(ctx.from!.id, )
+      // await ctx.sendDocument({source: Readable.from(bookFile.file), filename: bookFile.fileName})
+    } catch (error) {
+      console.log('REPLYING DOCUMENT ERROR')
+      console.log(error)
+    }
+
+    //       .catch(function (error) {
+    // console.log("ERROR SENDING FILE")
+    //         console.log(error)
+    //       })
+  }
+
   return ctx.reply('👍').then(() => next())
 })
-
 
 bot.catch(e => {
   console.log('ERROR')
@@ -68,6 +133,70 @@ bot.launch()
 // Enable graceful stop
 process.once('SIGINT', () => bot.stop('SIGINT'))
 process.once('SIGTERM', () => bot.stop('SIGTERM'))
+
+async function getPage(url: string) {
+  try {
+    const { data } = await axios.get(url)
+    return data
+  } catch (error) {
+    console.log(error)
+  }
+}
+function getDownloadUrl(id: string, format: BookFormat = 'mobi'): string {
+  return `${ORIGIN}/b/${id}/${format}`
+}
+async function downloadBook(id: string, format: BookFormat = 'mobi'): Promise<BookFile> {
+  const response = await axios({
+    url: getDownloadUrl(id, format),
+    method: 'GET',
+    responseType: 'arraybuffer',
+  })
+  const fileName = response.headers['content-disposition'].slice(21)
+  if (!fileName) throw new Error(`Book ${id} unavailable.`)
+
+  return {
+    id,
+    file: response.data,
+    fileName,
+  }
+}
+
+async function getBookInfoById(id: number): Promise<BookInfo | undefined> {
+  const page: string = await getPage(`${ORIGIN}/b/${id}`)
+  const authorRegExp = /\/script><a href="\/a\/[0-9]+">(?<author>[\w\W][^<>()|]+)<\/a>/i
+  const titleRegExp = /<title>(?<title>[\w\W][^()|]+).*<\/title>/i
+  const bookDescriptionRegExp = /<h2>Аннотация<\/h2>\n<p>(?<description>.*?)<\/p>/s
+  const bookFormatRegExp = /\/b\/\d+\/(\w+)"/g
+  //  \>\(\1\) /g
+  try {
+    const bookInfo: BookInfo = { id, author: '', title: '', description: '', formats: [] }
+
+    const authorMatch = authorRegExp.exec(page)
+    if (authorMatch && authorMatch.groups) {
+      bookInfo.author = authorMatch.groups.author.trim()
+    }
+
+    const titleMatch = titleRegExp.exec(page)
+    if (titleMatch && titleMatch.groups) {
+      bookInfo.title = titleMatch.groups.title.trim()
+    }
+
+    const descriptionMatch = bookDescriptionRegExp.exec(page)
+    if (descriptionMatch && descriptionMatch.groups) {
+      // console.log("1111")
+      // console.log(descriptionMatch.groups.description)
+      bookInfo.description = descriptionMatch.groups.description.trim().replaceAll('<br />', '\n')
+    }
+
+    const formats = [...page.matchAll(bookFormatRegExp)].map(format => format[1]).filter(format => format !== 'read')
+    console.dir(formats)
+    bookInfo.formats = formats
+
+    return bookInfo
+  } catch (e) {
+    console.log(e)
+  }
+}
 
 function composeReply(query: string, currentPage: number, books: Array<BooksByName>) {
   const totalPages = Math.ceil(books.length / PAGE_SIZE)
