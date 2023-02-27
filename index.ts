@@ -1,3 +1,4 @@
+import fs from 'fs'
 import { Context, Telegraf, Markup, Composer, Telegram, Input } from 'telegraf'
 import { Update } from 'typegram'
 import { useNewReplies } from 'telegraf/future'
@@ -7,7 +8,7 @@ import FlibustaAPI from 'flibusta'
 import dotenv from 'dotenv'
 import Book from 'flibusta/build/types/book'
 import Author from 'flibusta/build/types/authors'
-import { randomInt } from 'crypto'
+import { randomInt, randomUUID } from 'crypto'
 import { BooksByName } from 'flibusta/build/types/booksByName'
 import axios from 'axios'
 import { fromBuffer } from 'telegraf/typings/input'
@@ -37,8 +38,8 @@ const bot: Telegraf<Context<Update>> = new Telegraf(process.env.BOT_TOKEN)
 const flibustaApi = new FlibustaAPI(ORIGIN)
 const PAGE_SIZE = 5
 bot.use(useNewReplies())
+// bot.use(Telegraf.log())
 
-bot.use(Telegraf.log())
 bot.hears(/(?<=^\/download)\d+$/, async ctx => {
   //get info on book
   const bookId: number = Number(ctx.match[0])
@@ -46,7 +47,7 @@ bot.hears(/(?<=^\/download)\d+$/, async ctx => {
   const replyHTML = `${book.title}\n ${book.author}\n\n ${book.description}\n\n Choose format for download:`
   const buttons = book.formats.map(format => {
     const buttonCb = JSON.stringify({ id: book.id, format })
-    console.log({ buttonCb })
+    // console.log({ buttonCb })
     return Markup.button.callback(format, buttonCb)
   })
 
@@ -68,9 +69,7 @@ bot.hears(/.+/, async ctx => {
   })
 })
 
-bot.action(/.+/, async (ctx, next) => {
-  console.log('CB')
-  console.log(ctx.match[0])
+bot.action(/.+/, async ctx => {
   const action: { page?: number; query?: string; id?: number; format?: BookFormat } = JSON.parse(ctx.match[0])
   if (action.hasOwnProperty('page') && action.hasOwnProperty('query')) {
     const currentPage = action.page as number
@@ -82,45 +81,18 @@ bot.action(/.+/, async (ctx, next) => {
       parse_mode: 'HTML',
       ...Markup.inlineKeyboard(paginationButtons),
     })
-  }
-
-  if (action.hasOwnProperty('id') && action.hasOwnProperty('format')) {
+  } else if (action.hasOwnProperty('id') && action.hasOwnProperty('format')) {
     //user requested to download book with format
-
+    const book = (await getBookInfoById(action.id as number)) as BookInfo
+    const replyHTML = `${book.title}\n ${book.author}\n\n ${book.description}\n`
     const bookFile = await downloadBook(String(action.id), action.format)
-    console.log(ctx.from!.id)
-    // console.log(bookFile)
 
-    //  await ctx.sendDocument({
-    //       source: bookFile.file,
-    //       filename: bookFile.fileName,
-    //  })
-    const downloadURL = getDownloadUrl(String(action.id), action.format)
-    console.dir(downloadURL)
+    const inputFile = Input.fromBuffer(bookFile.file, bookFile.fileName)
+    await ctx.editMessageText(replyHTML, { parse_mode: 'HTML' })
+    return await ctx.replyWithDocument(inputFile)
 
-    // const inputFile = fromBuffer(bookFile.file, bookFile.fileName)
-    // await ctx.sendDocument(inputFile)
-    console.log({ source: bookFile.file, filename: bookFile.fileName });
-    const inputFile = Input.fromBuffer(bookFile.file, bookFile.fileName+'1')
-    try {
-      const a = await ctx.replyWithDocument(inputFile)
-
-      // const inputFIle =
-
-      // const fileTelegram = await ctx.telegram.sendDocument(ctx.from!.id, )
-      // await ctx.sendDocument({source: Readable.from(bookFile.file), filename: bookFile.fileName})
-    } catch (error) {
-      console.log('REPLYING DOCUMENT ERROR')
-      console.log(error)
-    }
-
-    //       .catch(function (error) {
-    // console.log("ERROR SENDING FILE")
-    //         console.log(error)
-    //       })
+    // return ctx.sendDocument(inputFile)
   }
-
-  return ctx.reply('👍').then(() => next())
 })
 
 bot.catch(e => {
@@ -151,7 +123,8 @@ async function downloadBook(id: string, format: BookFormat = 'mobi'): Promise<Bo
     method: 'GET',
     responseType: 'arraybuffer',
   })
-  const fileName = response.headers['content-disposition'].slice(21)
+  let fileName: string = response.headers['content-disposition'].slice(21)
+  fileName = fileName.replaceAll('"', '').replaceAll("'", '')
   if (!fileName) throw new Error(`Book ${id} unavailable.`)
 
   return {
