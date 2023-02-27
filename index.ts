@@ -13,6 +13,8 @@ import { BooksByName } from 'flibusta/build/types/booksByName'
 import axios from 'axios'
 import { fromBuffer } from 'telegraf/typings/input'
 import { Readable } from 'stream'
+import { request } from 'http'
+import { dir } from 'console'
 
 dotenv.config()
 
@@ -40,6 +42,37 @@ const PAGE_SIZE = 5
 bot.use(useNewReplies())
 // bot.use(Telegraf.log())
 
+bot.start(ctx => {
+  let startMessage = "Hi! I'm searching books and authors on Flibusta.is\n"
+  startMessage += "To start searching send me title of the book or the author's name"
+  return ctx.sendMessage(startMessage)
+})
+
+bot.help(ctx => {
+  let helpMessage = "Just send me title of the book or the author's name so I can start searching\n"
+  helpMessage += 'List of available commands:\n'
+  helpMessage += '/start - show starting message\n'
+  helpMessage += "/search 'title or name' - search for provided input\n"
+  helpMessage += '/random - get random book\n'
+  helpMessage += '/\n'
+  helpMessage += '/\n'
+  helpMessage += '/\n'
+  return ctx.sendMessage(helpMessage)
+})
+bot.command('stop', ctx => {
+  return ctx.sendMessage('stop')
+})
+bot.command('search', ctx => {
+  const a = ctx.update.message.text
+  const query = ctx.update.message.text
+  dir(a)
+  return ctx.sendMessage('search')
+})
+
+bot.command('random', ctx => {
+  return ctx.sendMessage('search')
+})
+
 bot.hears(/(?<=^\/download)\d+$/, async ctx => {
   //get info on book
   const bookId: number = Number(ctx.match[0])
@@ -47,40 +80,50 @@ bot.hears(/(?<=^\/download)\d+$/, async ctx => {
   const replyHTML = `${book.title}\n ${book.author}\n\n ${book.description}\n\n Choose format for download:`
   const buttons = book.formats.map(format => {
     const buttonCb = JSON.stringify({ id: book.id, format })
-    // console.log({ buttonCb })
     return Markup.button.callback(format, buttonCb)
   })
 
   return ctx.sendMessage(replyHTML, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) })
-
-  // return ctx.reply('👍👍')
 })
+
 bot.hears(/.+/, async ctx => {
   const query: string = ctx.match[0]
-  const currentPage = 1
 
-  const books = (await flibustaApi.getBooksByName(query)) || []
+  const { replyHTML, paginationButtons } = await getInitBooksSearchResponse(query)
 
-  const { replyHTML, paginationButtons } = composeReply(query, currentPage, books)
-
-  return ctx.sendMessage(replyHTML === '' ? 'no response' : replyHTML, {
+  return ctx.sendMessage(replyHTML, {
     parse_mode: 'HTML',
     ...Markup.inlineKeyboard(paginationButtons),
   })
 })
 
+async function getInitBooksSearchResponse(query: string) {
+  const books = (await flibustaApi.getBooksByName(query)) || []
+  const { replyHTML, paginationButtons } = composeBooksResponse(query, 1, books)
+  return { replyHTML, paginationButtons }
+}
+
 bot.action(/.+/, async ctx => {
-  const action: { page?: number; query?: string; id?: number; format?: BookFormat } = JSON.parse(ctx.match[0])
+  const action: { page?: number; query?: string; id?: number; format?: BookFormat; currentPage?: number } = JSON.parse(
+    ctx.match[0]
+  )
   if (action.hasOwnProperty('page') && action.hasOwnProperty('query')) {
+    if (action['currentPage'] === action.page) {
+      // requesting same page that is already displaying
+      return await ctx.answerCbQuery() // send ack so user don't see spining wheel like there is no answer from server
+    }
     const currentPage = action.page as number
     const query = action.query as string
     const books = (await flibustaApi.getBooksByName(query)) || []
 
-    const { replyHTML, paginationButtons } = composeReply(query, currentPage, books)
-    return ctx.editMessageText(replyHTML === '' ? 'no response' : replyHTML, {
-      parse_mode: 'HTML',
-      ...Markup.inlineKeyboard(paginationButtons),
-    })
+    const { replyHTML, paginationButtons } = composeBooksResponse(query, currentPage, books)
+
+    return ctx
+      .editMessageText(replyHTML === '' ? 'no response' : replyHTML, {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard(paginationButtons),
+      })
+      .catch(e => console.log(e.response))
   } else if (action.hasOwnProperty('id') && action.hasOwnProperty('format')) {
     //user requested to download book with format
     const book = (await getBookInfoById(action.id as number)) as BookInfo
@@ -156,13 +199,10 @@ async function getBookInfoById(id: number): Promise<BookInfo | undefined> {
 
     const descriptionMatch = bookDescriptionRegExp.exec(page)
     if (descriptionMatch && descriptionMatch.groups) {
-      // console.log("1111")
-      // console.log(descriptionMatch.groups.description)
       bookInfo.description = descriptionMatch.groups.description.trim().replaceAll('<br />', '\n')
     }
 
     const formats = [...page.matchAll(bookFormatRegExp)].map(format => format[1]).filter(format => format !== 'read')
-    console.dir(formats)
     bookInfo.formats = formats
 
     return bookInfo
@@ -171,17 +211,18 @@ async function getBookInfoById(id: number): Promise<BookInfo | undefined> {
   }
 }
 
-function composeReply(query: string, currentPage: number, books: Array<BooksByName>) {
+function composeBooksResponse(query: string, currentPage: number, books: Array<BooksByName>) {
   const totalPages = Math.ceil(books.length / PAGE_SIZE)
   const paginationButtons = getPaginationButtons(currentPage, totalPages, query)
 
   const paginatedBooks = paginate(books, currentPage)
-  const replyHTML: string =
+  let replyHTML =
     `Found ${books.length} books\n\n` +
-    paginatedBooks!.reduce((acc, bookAuthors) => {
+    paginatedBooks.reduce((acc, bookAuthors) => {
       acc += book2Html(bookAuthors.book, bookAuthors.authors)
       return acc + '\n'
     }, '')
+  replyHTML = replyHTML === '' ? 'no response' : replyHTML
 
   return { replyHTML, paginationButtons }
 }
@@ -205,27 +246,27 @@ function book2Html(book: Book, authors: Array<Author>) {
 }
 
 function paginate<Type>(items: Array<Type>, page = 1, pageSize = PAGE_SIZE): Array<Type> {
-  return items.slice((page - 1) * pageSize, page * pageSize)
+  return items!.slice((page - 1) * pageSize, page * pageSize)
 }
 
 function getPaginationButtons(currentPage: number, totalPages: number, query: string) {
   const pagesArray = parsePages(currentPage, totalPages)
   const buttons = pagesArray.map(pageObj => {
-    const callback = JSON.stringify({ page: pageObj.page, query })
+    const callback = JSON.stringify({ page: pageObj.page, query, currentPage })
     return Markup.button.callback(pageObj.buttonLabel, callback)
   })
   return buttons
 }
 
 function parsePages(currentPage: number, totalPages: number): Array<{ buttonLabel: string; page: number }> {
-  let result: Array<{ buttonLabel: string; page: number }> = [{ buttonLabel: '', page: 0 }]
+  let buttonPayload: Array<{ buttonLabel: string; page: number }> = [{ buttonLabel: '', page: 1 }]
   if (totalPages <= 5) {
-    result = Array(totalPages)
+    buttonPayload = Array(totalPages)
       .fill('')
       .map((_, i) => ({ buttonLabel: wrapCurrentPage(currentPage, i + 1), page: i + 1 }))
   } else {
     if (currentPage <= 3)
-      result = [
+      buttonPayload = [
         { buttonLabel: wrapCurrentPage(currentPage, 1), page: 1 },
         { buttonLabel: wrapCurrentPage(currentPage, 2), page: 2 },
         { buttonLabel: wrapCurrentPage(currentPage, 3), page: 3 },
@@ -233,7 +274,7 @@ function parsePages(currentPage: number, totalPages: number): Array<{ buttonLabe
         { buttonLabel: wrapLastPage(totalPages), page: totalPages },
       ]
     if (currentPage >= 4 && currentPage <= totalPages - 3)
-      result = [
+      buttonPayload = [
         { buttonLabel: wrapFirstPage(), page: 1 },
         { buttonLabel: wrapPreviousPage(currentPage - 1), page: currentPage - 1 },
         { buttonLabel: wrapCurrentPage(currentPage, currentPage), page: currentPage },
@@ -241,7 +282,7 @@ function parsePages(currentPage: number, totalPages: number): Array<{ buttonLabe
         { buttonLabel: wrapLastPage(totalPages), page: totalPages },
       ]
     if (currentPage >= totalPages - 2)
-      result = [
+      buttonPayload = [
         { buttonLabel: wrapFirstPage(), page: 1 },
         { buttonLabel: wrapPreviousPage(totalPages - 3), page: totalPages - 3 },
         { buttonLabel: wrapCurrentPage(currentPage, totalPages - 2), page: totalPages - 2 },
@@ -249,26 +290,7 @@ function parsePages(currentPage: number, totalPages: number): Array<{ buttonLabe
         { buttonLabel: wrapCurrentPage(currentPage, totalPages), page: totalPages },
       ]
   }
-  return result
-}
-
-function testPageButtons() {
-  const MAX_BUTTONS = 5
-  const totalPagesArray = [1, 2, 3, 4, 5, 6, 7, 10, 25]
-  const currentPageArray = [-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 22, 23, 24, 25, 26, 27]
-
-  const result = []
-  for (const totalPages of totalPagesArray) {
-    for (const currentPage of currentPageArray) {
-      if (currentPage < 1 || currentPage > totalPages) {
-        // console.log(`not valid current: ${currentPage}, total: ${totalPages}`)
-        continue
-      }
-      result.push(parsePages(currentPage, totalPages))
-    }
-  }
-
-  console.log(result)
+  return buttonPayload
 }
 
 function wrapFirstPage() {
