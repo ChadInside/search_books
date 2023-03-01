@@ -1,44 +1,24 @@
-import fs from 'fs'
-import { Context, Telegraf, Markup, Composer, Telegram, Input } from 'telegraf'
+import { Context, Telegraf, Markup, Input } from 'telegraf'
 import { Update } from 'typegram'
 import { useNewReplies } from 'telegraf/future'
-import { message } from 'telegraf/filters'
 import FlibustaAPI from 'flibusta'
 
 import dotenv from 'dotenv'
 import Book from 'flibusta/build/types/book'
 import Author from 'flibusta/build/types/authors'
-import { randomInt, randomUUID } from 'crypto'
+import { randomInt } from 'crypto'
 import { BooksByName } from 'flibusta/build/types/booksByName'
 import axios from 'axios'
-import { fromBuffer } from 'telegraf/typings/input'
-import { Readable } from 'stream'
-import { request } from 'http'
-import { dir } from 'console'
+
+import _ from 'lodash'
 
 dotenv.config()
-
-type BookInfo = {
-  id: number
-  title: string
-  author: string
-  description: string
-  formats: Array<string>
-}
-
-interface BookFile {
-  id: string
-  file: Buffer
-  fileName: string
-  filePath?: string
-}
-
-type BookFormat = 'mobi' | 'fb2' | 'pdf' | 'epub'
 
 const ORIGIN = 'http://flibusta.is/'
 const bot: Telegraf<Context<Update>> = new Telegraf(process.env.BOT_TOKEN)
 const flibustaApi = new FlibustaAPI(ORIGIN)
 const PAGE_SIZE = 5
+const MAX_BOOK_ID = 800000
 bot.use(useNewReplies())
 // bot.use(Telegraf.log())
 
@@ -54,29 +34,83 @@ bot.help(ctx => {
   helpMessage += '/start - show starting message\n'
   helpMessage += "/search 'title or name' - search for provided input\n"
   helpMessage += '/random - get random book\n'
-  helpMessage += '/\n'
-  helpMessage += '/\n'
-  helpMessage += '/\n'
   return ctx.sendMessage(helpMessage)
 })
 bot.command('stop', ctx => {
   return ctx.sendMessage('stop')
 })
-bot.command('search', ctx => {
-  const a = ctx.update.message.text
-  const query = ctx.update.message.text
-  dir(a)
-  return ctx.sendMessage('search')
+bot.command('search', async ctx => {
+  const query = ctx.update.message.text.replace(/\/search/, '').trim()
+  const { replyHTML, paginationButtons } = await getInitBooksSearchResponse(query)
+
+  return ctx.sendMessage(replyHTML, {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard(paginationButtons),
+  })
 })
 
-bot.command('random', ctx => {
-  return ctx.sendMessage('search')
+bot.command('random', async ctx => {
+  const book = await getRandomBook()
+  const bookHTML = bookHTMLDetailed(book)
+  const buttons = buttonsForRandomBook(book.id)
+  return ctx.sendMessage(bookHTML + `\n ${book.id}`, {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard(buttons),
+  })
 })
+
+function buttonsForRandomBook(bookId: number) {
+  const anotherBookButton = Markup.button.callback('Another', 'another random')
+  const downloadThisBookButton = Markup.button.callback('Download this', `random /download${bookId}`)
+  return [anotherBookButton, downloadThisBookButton]
+}
+
+bot.action('another random', async ctx => {
+  const book = await getRandomBook()
+  const bookHTML = bookHTMLDetailed(book)
+  const buttons = buttonsForRandomBook(book.id)
+  return ctx.editMessageText(bookHTML + `\n ${book.id}`, {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard(buttons),
+  })
+})
+
+bot.action(/(?<=^random \/download)\d+$/, async ctx => {
+  const bookId: number = Number(ctx.match[0])
+
+  const book = (await getBookInfoById(bookId)) as BookInfo
+  if (book === undefined) return ctx.sendMessage('Book not found')
+
+  const replyHTML = `${book.title}\n ${book.author}\n\n ${book.description}\n\n Choose format for download:`
+  const buttons = book.formats.map(format => {
+    const buttonCb = JSON.stringify({ id: book.id, format })
+    return Markup.button.callback(format, buttonCb)
+  })
+
+  return ctx.editMessageText(replyHTML, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) })
+})
+
+async function getRandomBook(): Promise<BookInfo> {
+  let count = 0
+  for (let id = randomBookId(); ; id = randomBookId()) {
+    if (count++ > 100) return (await getBookInfoById(505692)) as BookInfo
+    const book = (await getBookInfoById(id)) as BookInfo
+    if (book === undefined) continue
+    if (book.title === `Книги по названию ${id}`) continue
+    return book
+  }
+}
+
+function randomBookId() {
+  return randomInt(MAX_BOOK_ID)
+}
 
 bot.hears(/(?<=^\/download)\d+$/, async ctx => {
   //get info on book
   const bookId: number = Number(ctx.match[0])
   const book = (await getBookInfoById(bookId)) as BookInfo
+  if (book === undefined) return ctx.sendMessage('Book not found')
+
   const replyHTML = `${book.title}\n ${book.author}\n\n ${book.description}\n\n Choose format for download:`
   const buttons = book.formats.map(format => {
     const buttonCb = JSON.stringify({ id: book.id, format })
@@ -126,8 +160,9 @@ bot.action(/.+/, async ctx => {
       .catch(e => console.log(e.response))
   } else if (action.hasOwnProperty('id') && action.hasOwnProperty('format')) {
     //user requested to download book with format
-    const book = (await getBookInfoById(action.id as number)) as BookInfo
-    const replyHTML = `${book.title}\n ${book.author}\n\n ${book.description}\n`
+    const book = (await getBookInfoById(action.id!)) as BookInfo
+    const replyHTML = bookHTMLDetailed(book)
+
     const bookFile = await downloadBook(String(action.id), action.format)
 
     const inputFile = Input.fromBuffer(bookFile.file, bookFile.fileName)
@@ -138,8 +173,11 @@ bot.action(/.+/, async ctx => {
   }
 })
 
+function bookHTMLDetailed(book: BookInfo) {
+  return `${book.title}\n ${book.author}\n\n ${book.description}\n`
+}
+
 bot.catch(e => {
-  console.log('ERROR')
   console.log(e)
 })
 
@@ -205,9 +243,13 @@ async function getBookInfoById(id: number): Promise<BookInfo | undefined> {
     const formats = [...page.matchAll(bookFormatRegExp)].map(format => format[1]).filter(format => format !== 'read')
     bookInfo.formats = formats
 
+    if (_.isEqual(bookInfo, { id, author: '', title: 'Книги', description: '', formats: [] }))
+      throw new Error('book not found Flibusta')
+
     return bookInfo
   } catch (e) {
-    console.log(e)
+    // console.log(e)
+    return undefined
   }
 }
 
@@ -216,28 +258,30 @@ function composeBooksResponse(query: string, currentPage: number, books: Array<B
   const paginationButtons = getPaginationButtons(currentPage, totalPages, query)
 
   const paginatedBooks = paginate(books, currentPage)
-  let replyHTML =
+  const replyHTML =
     `Found ${books.length} books\n\n` +
     paginatedBooks.reduce((acc, bookAuthors) => {
-      acc += book2Html(bookAuthors.book, bookAuthors.authors)
+      acc += book2ListItem(bookAuthors.book, bookAuthors.authors)
       return acc + '\n'
     }, '')
-  replyHTML = replyHTML === '' ? 'no response' : replyHTML
 
   return { replyHTML, paginationButtons }
 }
 
-function book2Html(book: Book, authors: Array<Author>) {
+function book2ListItem(book: Book, authors: Array<Author>) {
   /** 
    * Стивен Кинг идёт в кино (сборник) - ru
 Кинг, Стивен. Сборники
 Стивен  Кинг
 Скачать книгу: /download314781
    */
-  const authorsNames = authors.reduce((acc, author) => {
-    acc += author.name
-    return acc
-  }, '')
+  const authorsNames = authors
+    .reduce((authors, author) => {
+      authors += author.name + ', '
+      return authors
+    }, '')
+    .replace(/, $/, '')
+  console.log({ authorsNames, authors })
   let result = `<b>${book.name}</b>\n`
   result += authorsNames + '\n'
   result += `Download /download${book.id}\n`
@@ -313,3 +357,20 @@ function wrapCurrentPage(currentPage: number, page: number) {
   const currentPageSymbol = '·'
   return currentPage === page ? `${currentPageSymbol}${currentPage}${currentPageSymbol}` : `${page}`
 }
+
+interface BookInfo {
+  id: number
+  title: string
+  author: string
+  description: string
+  formats: Array<string>
+}
+
+interface BookFile {
+  id: string
+  file: Buffer
+  fileName: string
+  filePath?: string
+}
+
+type BookFormat = 'mobi' | 'fb2' | 'pdf' | 'epub'
