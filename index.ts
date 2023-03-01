@@ -78,23 +78,22 @@ bot.action('another random', async ctx => {
 bot.action(/(?<=^random \/download)\d+$/, async ctx => {
   const bookId: number = Number(ctx.match[0])
 
-  const book = (await getBookInfoById(bookId)) as BookInfo
-  if (book === undefined) return ctx.sendMessage('Book not found')
+  const book = await getBookInfoById(bookId)
+  if (book === undefined) throw new Error(BOOK_NOT_FOUND_ERROR)
 
-  const replyHTML = `${book.title}\n ${book.author}\n\n ${book.description}\n\n Choose format for download:`
-  const buttons = book.formats.map(format => {
-    const buttonCb = JSON.stringify({ id: book.id, format })
-    return Markup.button.callback(format, buttonCb)
-  })
-
-  return ctx.editMessageText(replyHTML, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) })
+  const { message, buttons } = composeDownloadBookResponse(book)
+  return ctx.editMessageText(message, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) })
 })
 
+
+
+const BOOK_NOT_FOUND_ERROR = 'Book not found'
+const NO_CONTENT_DISPOSITION_ERROR = 'No content-disposition header'
 async function getRandomBook(): Promise<BookInfo> {
   let count = 0
   for (let id = randomBookId(); ; id = randomBookId()) {
-    if (count++ > 100) return (await getBookInfoById(505692)) as BookInfo
-    const book = (await getBookInfoById(id)) as BookInfo
+    if (count++ > 5) return (await getBookInfoById(505692)) as BookInfo
+    const book = await getBookInfoById(id)
     if (book === undefined) continue
     if (book.title === `Книги по названию ${id}`) continue
     return book
@@ -108,17 +107,20 @@ function randomBookId() {
 bot.hears(/(?<=^\/download)\d+$/, async ctx => {
   //get info on book
   const bookId: number = Number(ctx.match[0])
-  const book = (await getBookInfoById(bookId)) as BookInfo
-  if (book === undefined) return ctx.sendMessage('Book not found')
+  const book = await getBookInfoById(bookId)
 
-  const replyHTML = `${book.title}\n ${book.author}\n\n ${book.description}\n\n Choose format for download:`
+  const { message, buttons } = composeDownloadBookResponse(book)
+  return ctx.sendMessage(message, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) })
+})
+
+function composeDownloadBookResponse(book: BookInfo) {
+  const message = `${book.title}\n ${book.author}\n\n ${book.description}\n\n Choose format for download:`
   const buttons = book.formats.map(format => {
     const buttonCb = JSON.stringify({ id: book.id, format })
     return Markup.button.callback(format, buttonCb)
   })
-
-  return ctx.sendMessage(replyHTML, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) })
-})
+  return { message, buttons }
+}
 
 bot.hears(/.+/, async ctx => {
   const query: string = ctx.match[0]
@@ -162,8 +164,12 @@ bot.action(/.+/, async ctx => {
     //user requested to download book with format
     const book = (await getBookInfoById(action.id!)) as BookInfo
     const replyHTML = bookHTMLDetailed(book)
-
-    const bookFile = await downloadBook(String(action.id), action.format)
+    let bookFile
+    // try {
+      bookFile = await downloadBook(String(action.id), action.format)
+    // } catch (error) {
+    //   throw error
+    // }
 
     const inputFile = Input.fromBuffer(bookFile.file, bookFile.fileName)
     await ctx.editMessageText(replyHTML, { parse_mode: 'HTML' })
@@ -177,8 +183,12 @@ function bookHTMLDetailed(book: BookInfo) {
   return `${book.title}\n ${book.author}\n\n ${book.description}\n`
 }
 
-bot.catch(e => {
-  console.log(e)
+bot.catch(async (err, ctx) => {
+  if (err.message === BOOK_NOT_FOUND_ERROR) ctx.sendMessage(BOOK_NOT_FOUND_ERROR)
+  if (err.message === NO_CONTENT_DISPOSITION_ERROR) ctx.sendMessage(NO_CONTENT_DISPOSITION_ERROR)
+  
+  console.log(err.message)
+  ctx.answerCbQuery()
 })
 
 bot.launch()
@@ -204,6 +214,7 @@ async function downloadBook(id: string, format: BookFormat = 'mobi'): Promise<Bo
     method: 'GET',
     responseType: 'arraybuffer',
   })
+  if (!response.headers['content-disposition']) throw new Error(NO_CONTENT_DISPOSITION_ERROR)
   let fileName: string = response.headers['content-disposition'].slice(21)
   fileName = fileName.replaceAll('"', '').replaceAll("'", '')
   if (!fileName) throw new Error(`Book ${id} unavailable.`)
@@ -244,7 +255,7 @@ async function getBookInfoById(id: number): Promise<BookInfo | undefined> {
     bookInfo.formats = formats
 
     if (_.isEqual(bookInfo, { id, author: '', title: 'Книги', description: '', formats: [] }))
-      throw new Error('book not found Flibusta')
+      throw new Error(BOOK_NOT_FOUND_ERROR)
 
     return bookInfo
   } catch (e) {
